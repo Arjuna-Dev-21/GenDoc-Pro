@@ -5,6 +5,7 @@ import base64
 import requests
 import tempfile
 from dotenv import load_dotenv
+from PIL import Image
 import openai
 import json
 from fpdf import FPDF
@@ -30,10 +31,14 @@ def get_prompt(code_content, language):
     **Instructions:**
     1.  Analyze the following `{language}` code.
     2.  Provide a high-level summary.
-    3.  Break down each function/class (Parameters, Returns, Purpose).
-    4.  Generate a flowchart using **Mermaid.js `graph TD` syntax**.
-        - **IMPORTANT:** Output ONLY the code for the flowchart inside the flowchart section. Do not wrap it in markdown code blocks (like ```mermaid). Just raw text.
-        - Keep the flowchart logic simple and clear.
+    3.  **Detailed Breakdown:**
+        - Describe each function, method, and class (Parameters, Returns, Purpose).
+        - **IMPORTANT:** Also describe the **Main Execution Flow** (script logic, global variables, or user interface interactions) that happens outside of functions.
+    4.  **Flowchart:**
+        - Generate a flowchart using **Mermaid.js `graph TD` syntax**.
+        - **IMPORTANT:** Do NOT use double quotes (") inside the node labels. Use single quotes (') instead.
+        - The flowchart MUST include the **Main Script Logic**, specifically showing user interactions.
+        - Output ONLY the code for the flowchart inside the flowchart section.
     5.  The entire output must be in a single Markdown format.
 
     **Output Structure:**
@@ -93,6 +98,7 @@ class PDF(FPDF):
         # Fixed the DeprecationWarning here
         self.cell(0, 10, f'Page {self.page_no()}', align='C')
 
+# --- UPDATED: PDF Generation (Perfect Fit Logic) ---
 def create_pdf(summary, breakdown, flowchart_code):
     pdf = PDF()
     pdf.add_page()
@@ -120,39 +126,58 @@ def create_pdf(summary, breakdown, flowchart_code):
     
     # 3. Flowchart Image
     if flowchart_code:
+        # Start a fresh page for the visual
         pdf.add_page()
         pdf.set_font("Helvetica", 'B', 12)
         pdf.cell(0, 10, "3. Process Flowchart", new_x="LMARGIN", new_y="NEXT", align='L')
+        pdf.ln(5)
         
         try:
-            # 1. Wrap code in a JSON object with theme config
+            # Prepare Mermaid Data
             mermaid_data = {
                 "code": flowchart_code,
                 "mermaid": {"theme": "default"}
             }
             json_str = json.dumps(mermaid_data)
-            
-            # 2. Use URL-SAFE Base64 encoding (replaces + and / with - and _)
             json_bytes = json_str.encode("utf8")
             base64_bytes = base64.urlsafe_b64encode(json_bytes)
             base64_string = base64_bytes.decode("ascii")
             
-            # 3. Construct URL (No ?bgColor needed anymore)
             image_url = f"https://mermaid.ink/img/{base64_string}"
-
+            
             response = requests.get(image_url)
             
             if response.status_code == 200:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
                     tmp_file.write(response.content)
                     tmp_path = tmp_file.name
-                pdf.image(tmp_path, x=10, w=190)
+                
+                # --- FINAL FIX: Perfect Fit Logic ---
+                with Image.open(tmp_path) as img:
+                    img_w, img_h = img.size
+                    aspect_ratio = img_h / img_w
+                    
+                    # Define the available space on an A4 page (minus margins and title)
+                    # A4 is roughly 210mm x 297mm
+                    available_w = 190  # Width margin
+                    available_h = 230  # Height margin (leaves room for header/footer/title)
+                    
+                    # Check if the image is "Taller" than the page shape
+                    if aspect_ratio > (available_h / available_w):
+                        # It is a tall tower: constrain by HEIGHT
+                        pdf.image(tmp_path, x=10, h=available_h)
+                    else:
+                        # It is a wide map: constrain by WIDTH
+                        pdf.image(tmp_path, x=10, w=available_w)
+                        
+            elif response.status_code == 414:
+                pdf.set_font("Helvetica", 'I', 10)
+                pdf.multi_cell(0, 10, "(The flowchart is too large to fit on a printable PDF page. Please view it in the app.)")
             else:
                 pdf.set_font("Helvetica", 'I', 10)
                 pdf.cell(0, 10, f"(Flowchart server error: {response.status_code})", new_x="LMARGIN", new_y="NEXT")
                 
         except Exception as e:
-            print(f"DEBUG: Exception: {e}")
             pdf.set_font("Helvetica", 'I', 10)
             pdf.cell(0, 10, f"(Error rendering flowchart: {e})", new_x="LMARGIN", new_y="NEXT")
 
